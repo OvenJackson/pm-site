@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: product-project-management
+    runtime: python
+    plan: free
+    buildCommand: ""
+    startCommand: python tools/online_server.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.0
+      - key: EDIT_TOKEN
+        sync: false
