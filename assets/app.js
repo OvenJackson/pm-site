@@ -233,7 +233,9 @@
   var filePayload = window.PM_LOCAL_FILE || null;
   var serverPayload = window.PM_LOCAL_SAVE || null;
   var onlinePayload = window.PM_ONLINE_STATE || null;
-  var onlineEnabled = !!onlinePayload;
+  var onlineMode = !!window.PM_ONLINE_MODE;
+  var onlineEnabled = !!onlinePayload || onlineMode;
+  var onlinePollTimer = null;
   var ONLINE_TOKEN = '';
   try {
     var usp = new URLSearchParams(location.search);
@@ -295,8 +297,54 @@
       } catch (e) {}
     }, 300);
   }
+  function storeOnlineState(s) {
+    try {
+      localStorage.setItem(APP_KEY, JSON.stringify(s.app || {}));
+      localStorage.setItem(OV_KEY, JSON.stringify(s.ov || {}));
+      localStorage.setItem(TS_KEY, String(Number(s.ts || 0)));
+    } catch (e) {}
+  }
+  function startOnlinePolling() {
+    if (!onlineMode || onlinePollTimer) return;
+    onlinePollTimer = setInterval(function () {
+      fetch('api/state?t=' + Date.now(), { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (s) {
+        if (!s) return;
+        if (s.required && !ONLINE_TOKEN) onlineReadOnly = true;
+        var sts = Number(s.ts || 0);
+        if (sts > 0 && sts !== lastSaveTs) {
+          storeOnlineState(s);
+          location.reload();
+        }
+      }).catch(function () {});
+    }, 3000);
+    window.addEventListener('storage', function (ev) {
+      if (ev.key === APP_KEY || ev.key === OV_KEY) location.reload();
+    });
+  }
+  function bootstrapOnline() {
+    if (!onlineMode) return;
+    fetch('api/state?t=' + Date.now(), { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('no api');
+      return r.json();
+    }).then(function (s) {
+      if (s.required && !ONLINE_TOKEN) {
+        onlineReadOnly = true;
+        if (!onlineRoNotified) { onlineRoNotified = true; toast('当前为只读模式，请使用带编辑口令的链接'); }
+      } else {
+        onlineReadOnly = false;
+      }
+      var sts = Number(s.ts || 0);
+      if (sts > 0 && sts !== lastSaveTs) {
+        storeOnlineState(s);
+        location.reload();
+        return;
+      }
+      if (!onlineReadOnly && localTs > sts && (localStorage.getItem(APP_KEY) || localStorage.getItem(OV_KEY))) scheduleOnlineSave();
+      startOnlinePolling();
+    }).catch(function () { startOnlinePolling(); });
+  }
   function initOnlineSync() {
-    if (!onlineEnabled || !window.EventSource) return;
+    if (!onlinePayload || !window.EventSource) return;
     try {
       var es = new EventSource('/api/events');
       es.addEventListener('state', function () {
@@ -369,7 +417,7 @@
 
   /* ---------------- 可编辑数据（新增/编辑/删除/回收站/排期） ---------------- */
   var APP_KEY = 'pm_app_v1';
-  var APP = { poolAdded: [], poolPatches: {}, keyPatches: {}, recycle: [], purged: [], purgedNames: [], unkeyed: [], wbsOverride: {}, mapPlan: {}, wbsNotDo: {}, wbsHidden: {} };
+  var APP = { poolAdded: [], poolPatches: {}, keyPatches: {}, recycle: [], purged: [], purgedNames: [], unkeyed: [], wbsOverride: {}, mapPlan: {}, wbsNotDo: {}, wbsHidden: {}, wbsDeleted: [] };
   try {
     var _app = JSON.parse(localStorage.getItem(APP_KEY) || '{}') || {};
     Object.keys(APP).forEach(function (k) { if (_app[k] != null) APP[k] = _app[k]; });
@@ -448,6 +496,9 @@
     });
     D.wbs = D.wbs.filter(function (w) { return WBS_REMOVED.indexOf(w.name) < 0; });
     Object.keys(APP.wbsHidden || {}).forEach(function (name) {
+      D.wbs = D.wbs.filter(function (w) { return w.name !== name; });
+    });
+    (APP.wbsDeleted || []).forEach(function (name) {
       D.wbs = D.wbs.filter(function (w) { return w.name !== name; });
     });
   }
@@ -643,6 +694,7 @@
   function upsertWbs(name, months, planDate) {
     var w = buildWbsProject(name, months, planDate);
     if (!w) return null;
+    APP.wbsDeleted = (APP.wbsDeleted || []).filter(function (n) { return n !== name; });
     if (OV.wbs) {
       var changed = false;
       Object.keys(OV.wbs).forEach(function (k) {
@@ -1561,7 +1613,7 @@
         r.readAsArrayBuffer(f);
       };
       if (window.XLSX) parseExcel();
-      else loadScript('https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js').then(parseExcel).catch(function () { toast('Excel 解析组件加载失败'); });
+      else loadScript('assets/xlsx.full.min.js').then(parseExcel).catch(function () { loadScript('https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js').then(parseExcel).catch(function () { toast('Excel 解析组件加载失败'); }); });
     } else if (ext === 'pdf') {
       toast('正在解析 PDF…');
       loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js').then(function () {
@@ -2127,7 +2179,7 @@
         var stateCls = s.late ? ' has-late' : wr ? ' has-risk' : '';
         h += '<button class="wbs-proj' + stateCls + (w.name === proj.name ? ' on' : '') + '" data-wbsproj="' + esc(w.name) + '">';
         var wpri = (wm && wm.priority) || w.priority;
-        h += '<div class="wp-top"><div class="wp-name-row">' + wbsMonthBlock(wbsPlanDate(w)) + '<b class="wp-title">' + (isKeyWbsName(w.name) ? '⭐' : '') + esc(w.name) + '</b></div>' + (wpri ? tag(wpri, wpri === 'P0' ? 'rust' : 'amber') : '') + '</div>';
+        h += '<div class="wp-top"><div class="wp-name-row">' + wbsMonthBlock(wbsPlanDate(w)) + '<b class="wp-title">' + (isKeyWbsName(w.name) ? '⭐' : '') + esc(w.name) + '</b></div>' + (wpri ? tag(wpri, wpri === 'P0' ? 'rust' : 'amber') : '') + '<span class="wbs-del" data-wbsdel="' + esc(w.name) + '" title="删除 WBS">×</span></div>';
         h += '<div class="wp-tags">' + (wm ? typeTag(wm.type) + personTag(wm.owner) : '') + '</div>';
         h += '<div class="wp-sub"><div class="bar thin"><i class="' + (s.late ? 'delay' : wr ? 'risk' : '') + '" style="width:' + s.pct + '%"></i></div><em>' + s.pct + '%</em></div>';
         h += '</button>';
@@ -2937,6 +2989,25 @@
       $$('[data-wbsmonth]').forEach(function (b) {
         b.addEventListener('click', function () { state.wbs.month = this.getAttribute('data-wbsmonth'); render(); });
       });
+      $$('[data-wbsdel]').forEach(function (b) {
+        b.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          var name = this.getAttribute('data-wbsdel');
+          if (!confirm('确定删除“' + name + '”的 WBS 任务清单？')) return;
+          var w = findWbsAny(name);
+          var target = w ? w.name : name;
+          APP.wbsDeleted = APP.wbsDeleted || [];
+          if (APP.wbsDeleted.indexOf(target) < 0) APP.wbsDeleted.push(target);
+          D.wbs = D.wbs.filter(function (x) { return x.name !== target; });
+          delete WBS_BY_NORM[normalize(target)];
+          delete APP.wbsOverride[target];
+          delete APP.wbsHidden[target];
+          appSave();
+          if (!D.wbs.some(function (x) { return x.name === state.wbs.proj; })) state.wbs.proj = D.wbs[0] ? D.wbs[0].name : '';
+          render();
+          toast('已删除 WBS 任务清单');
+        });
+      });
       $$('[data-wbsonly]').forEach(function (b) {
         b.addEventListener('click', function () { state.wbs.only = this.getAttribute('data-wbsonly'); render(); });
       });
@@ -3290,8 +3361,9 @@
   updateOvBadge();
   updateNav();
   bindGlobal();
+  bootstrapOnline();
   initOnlineSync();
-  if (onlineEnabled && !onlineReadOnly && localTs > Number(onlinePayload.ts || 0) && (localStorage.getItem(APP_KEY) || localStorage.getItem(OV_KEY))) scheduleOnlineSave();
+  if (onlineEnabled && !onlineReadOnly && localTs > Number((onlinePayload && onlinePayload.ts) || 0) && (localStorage.getItem(APP_KEY) || localStorage.getItem(OV_KEY))) scheduleOnlineSave();
   if (serverEnabled && serverPayload) { touchSave(); scheduleServerSave(); }
 
   window.addEventListener('pagehide', function () {
