@@ -2769,6 +2769,11 @@ function outOrderedBalls(arr, prog) {
     var typeOpts = PROJECT_TYPES.map(function (t) { return '<option value="' + esc(t) + '">' + esc(t) + '</option>'; }).join('');
     var statusOpts = ['未开展', '正常', '暂停'].map(function (t) { return '<option value="' + t + '">' + t + '</option>'; }).join('');
     var priOpts = ['', 'P0', 'P1', 'P2'].map(function (t) { return '<option value="' + t + '">' + (t || '无') + '</option>'; }).join('');
+    var monthOpts = '<option value="">请选择</option>' + ['3', '4', '6'].map(function (n) { return '<option value="' + n + '">' + n + ' 个月</option>'; }).join('');
+    var anchorOpts = '<option value="">请选择</option>' + ['4.2|TR4 中试技术评审', '5.4|ADCP 产品中试转产评审', '2.6|项目立项', '3.2|TR3 小试技术评审', '1.4|CDCP 产品概念决策评审'].map(function (x) {
+      var a = x.split('|');
+      return '<option value="' + a[0] + '">' + a[0] + ' ' + a[1] + '</option>';
+    }).join('');
     return '<div class="batch-row pool-batch-row">' +
       '<label>项目名称 *<input data-paf="name" placeholder="请输入项目名称"></label>' +
       '<label>产品开发类型<select data-paf="type">' + typeOpts + '</select></label>' +
@@ -2776,14 +2781,20 @@ function outOrderedBalls(arr, prog) {
       '<label>项目成员<input data-paf="owner" placeholder="负责人"></label>' +
       '<label>计划完成时间<input type="date" data-paf="plan"></label>' +
       '<label>优先级<select data-paf="priority">' + priOpts + '</select></label>' +
-      '<label class="batch-check"><input type="checkbox" data-paf="isKey">重点项目</label>' +
+      '<div class="batch-flags"><label><input type="checkbox" data-paf="isKey">重点</label><label><input type="checkbox" data-paf="genWbs">WBS</label></div>' +
       '<button type="button" class="btn out-row-del" data-prowdel title="移除">×</button>' +
       '<label class="batch-note">备注<input data-paf="note" placeholder="选填"></label>' +
+      '<div class="pool-wbs-setup" data-wbs-setup hidden>' +
+        '<label>WBS 项目周期<select data-paf="months">' + monthOpts + '</select></label>' +
+        '<label>锚点任务<select data-paf="anchor">' + anchorOpts + '</select></label>' +
+        '<label>锚点完成日期<input type="date" data-paf="anchorDate"></label>' +
+        '<div class="wbs-setup-hint">生成 WBS 需填写计划完成时间或锚点完成日期；周期与锚点可手动调整。</div>' +
+      '</div>' +
       '</div>';
   }
   function openPoolAdd() {
     var h = '<form id="poolAddForm">';
-    h += '<div class="out-form-tip">可一次添加多个项目；保存后进入项目工作池，可继续在编辑页设置 WBS 与重点项目。</div>';
+    h += '<div class="out-form-tip">可一次添加多个项目；勾选 WBS 并填写周期与锚点后，保存时会同步生成 WBS 任务清单。</div>';
     h += '<div id="poolAddRows" class="batch-rows">' + poolAddRowHtml() + '</div>';
     h += '<div class="out-add-tools"><button type="button" id="poolAddLine" class="btn">+ 添加一行</button></div>';
     h += '<div class="form-actions"><button type="button" class="btn imp-open-btn" data-pool-imp><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3.5h4l1.4 1.6H14.5v8H1.5z"/></svg>批量导入</button><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn primary">保存</button></div>';
@@ -2799,6 +2810,29 @@ function outOrderedBalls(arr, prog) {
       if (!b) return;
       if (rows.children.length <= 1) { toast('至少保留一行'); return; }
       b.closest('.batch-row').remove();
+    });
+    rows.addEventListener('change', function (ev) {
+      var t = ev.target, row = t.closest('.batch-row');
+      if (!row) return;
+      var gen = row.querySelector('[data-paf="genWbs"]');
+      var type = row.querySelector('[data-paf="type"]');
+      var months = row.querySelector('[data-paf="months"]');
+      var anchor = row.querySelector('[data-paf="anchor"]');
+      var plan = row.querySelector('[data-paf="plan"]');
+      var anchorDate = row.querySelector('[data-paf="anchorDate"]');
+      if (t.getAttribute('data-paf') === 'genWbs') {
+        row.querySelector('[data-wbs-setup]').hidden = !gen.checked;
+        if (gen.checked) {
+          if (!months.value) months.value = isShortType(type.value) ? '3' : '6';
+          if (!anchor.value) anchor.value = (isShortType(type.value) && months.value === '3') ? '4.2' : '5.4';
+          if (!anchorDate.value && plan.value) anchorDate.value = plan.value;
+        }
+      }
+      if (t.getAttribute('data-paf') === 'type' && gen.checked) {
+        months.value = isShortType(type.value) ? '3' : '6';
+        anchor.value = months.value === '3' ? '4.2' : '5.4';
+      }
+      if (t.getAttribute('data-paf') === 'plan' && gen.checked && !anchorDate.value) anchorDate.value = plan.value;
     });
     var imp = $('[data-pool-imp]');
     if (imp) imp.addEventListener('click', function () { openImportPicker(); });
@@ -2822,11 +2856,26 @@ function outOrderedBalls(arr, prog) {
           plan: row.querySelector('[data-paf="plan"]').value || null,
           priority: row.querySelector('[data-paf="priority"]').value,
           isKey: row.querySelector('[data-paf="isKey"]').checked,
-          note: row.querySelector('[data-paf="note"]').value.trim()
+          genWbs: row.querySelector('[data-paf="genWbs"]').checked,
+          months: row.querySelector('[data-paf="months"]').value,
+          anchor: row.querySelector('[data-paf="anchor"]').value,
+          anchorDate: row.querySelector('[data-paf="anchorDate"]').value || '',
+          note: row.querySelector('[data-paf="note"]').value.trim(),
+          rowEl: row
         });
       });
       if (bad) { bad.focus(); toast('项目名称为必填项'); return; }
       if (dup) { toast('项目“' + dup + '”已存在，请修改后保存'); return; }
+      var badWbs = null;
+      items.forEach(function (d) {
+        if (!d.genWbs) return;
+        d.months = d.months || (isShortType(d.type) ? '3' : '6');
+        d.anchor = d.anchor || ((isShortType(d.type) && d.months === '3') ? '4.2' : '5.4');
+        if (!d.anchorDate && d.plan) d.anchorDate = d.plan;
+        if (!d.plan && d.anchorDate) d.plan = planFromAnchor(+(d.months || '4'), d.anchor, d.anchorDate) || null;
+        if (!d.plan && !badWbs) badWbs = d.rowEl.querySelector('[data-paf="plan"]');
+      });
+      if (badWbs) { badWbs.focus(); toast('生成 WBS 的项目需填写计划完成时间或锚点完成日期'); return; }
       items.forEach(function (d) {
         var p = {
           id: uid('p'), type: d.type, status: d.status, done: '未完成', name: d.name,
@@ -2836,6 +2885,7 @@ function outOrderedBalls(arr, prog) {
         D.pool.push(p);
         APP.poolAdded.push(cloneObj(p));
         if (d.isKey) ensureKey(p);
+        if (d.genWbs && p.plan) upsertWbs(p.name, +(d.months || (isShortType(d.type) ? 3 : 6)), p.plan);
       });
       appSave();
       closeModal();

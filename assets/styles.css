@@ -641,7 +641,7 @@ tr.overdue td{background:var(--danger-soft)}tr.overdue .t-name{color:var(--dange
 /* 批量新增行 */
 .batch-rows{display:flex;flex-direction:column;gap:8px;max-height:52vh;overflow:auto;padding-right:2px}
 .batch-row{display:grid;align-items:end;gap:8px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)}
-.pool-batch-row{grid-template-columns:minmax(150px,1.4fr) minmax(108px,1fr) 80px minmax(82px,.8fr) minmax(118px,1fr) 64px 76px 30px}
+.pool-batch-row{grid-template-columns:minmax(150px,1.4fr) minmax(106px,1fr) 78px minmax(82px,.8fr) minmax(116px,1fr) 62px 96px 30px}
 .color-batch-row{grid-template-columns:minmax(120px,1.1fr) minmax(100px,1fr) minmax(130px,1.35fr) minmax(110px,1fr) minmax(90px,.9fr) minmax(120px,1fr) 30px}
 .batch-row label{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:10px;color:var(--text-3);font-weight:600}
 .batch-note{grid-column:1/-1}
@@ -649,4 +649,10 @@ tr.overdue td{background:var(--danger-soft)}tr.overdue .t-name{color:var(--dange
 .batch-row input:focus,.batch-row select:focus{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand-soft)}
 .batch-check{flex-direction:row!important;align-items:center;gap:5px!important;white-space:nowrap;padding-bottom:8px}
 .batch-check input{width:auto!important;height:auto!important;padding:0!important}
-@media (max-width:900px){.pool-batch-row,.color-batch-row{grid-template-columns:1fr 1fr}.batch-note{grid-column:1/-1}}
+.batch-flags{display:flex;align-items:center;gap:9px;padding-bottom:8px;font-size:10px;color:var(--text-2);white-space:nowrap}
+.batch-flags label{flex-direction:row!important;align-items:center;gap:4px!important;font-size:10px;color:var(--text-2)}
+.batch-flags input{width:auto!important;height:auto!important;padding:0!important;margin:0}
+.pool-wbs-setup{grid-column:1/-1;display:grid;grid-template-columns:1fr 1.5fr 1fr auto;align-items:end;gap:8px;margin-top:2px;padding:9px;border-top:1px dashed var(--line)}
+.pool-wbs-setup[hidden]{display:none}
+.wbs-setup-hint{font-size:10px;color:var(--faint);line-height:1.5;padding-bottom:8px}
+@media (max-width:900px){.pool-batch-row,.color-batch-row{grid-template-columns:1fr 1fr}.batch-note{grid-column:1/-1}.pool-wbs-setup{grid-template-columns:1fr 1fr}.wbs-setup-hint{grid-column:1/-1}}
