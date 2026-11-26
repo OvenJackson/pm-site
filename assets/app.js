@@ -3049,7 +3049,7 @@
         else if (act === 'open-recycle') { openRecycle(); }
         else if (act === 'edit-key') { openProjectForm('key-edit', id); }
         else if (act === 'del-key') { deleteKeyProject(id); }
-        else if (act === 'export-ov') { exportOverrides(); }
+        
 
         else if (act === 'print') { window.print(); }
         $('#searchResults').hidden = true;
@@ -3262,16 +3262,7 @@
     }).catch(function () {});
   }
 
-  function exportOverrides() {
-    if (!ovCount()) { toast('当前没有本地修改'); return; }
-    var blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), overrides: OV }, null, 2)], { type: 'application/json' });
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = '项目管理_本地修改_' + TODAY.replace(/-/g, '') + '.json';
-    a.click();
-    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
-    toast('已导出本地修改记录');
-  }
+  
   function updateNav() {
     var c = counts();
     $('#navCountPool').textContent = D.pool.length;
