@@ -906,6 +906,11 @@
     $('#pageEyebrow').textContent = VIEWS[id].eyebrow;
     $('#pageTitle').textContent = VIEWS[id].title;
     var view = $('#view');
+    var railScroll = null;
+    if (id === 'wbs') {
+      var railOld = document.querySelector('.wbs-rail');
+      if (railOld) railScroll = railOld.scrollTop;
+    }
     var html = '';
     if (id === 'overview') html = viewOverview();
     else if (id === 'map') html = viewMap();
@@ -916,6 +921,10 @@
     else if (id === 'color') html = viewColor();
     view.innerHTML = html;
     bindView(id);
+    if (railScroll != null) {
+      var railNew = document.querySelector('.wbs-rail');
+      if (railNew) railNew.scrollTop = railScroll;
+    }
     updateNav();
     window.scrollTo({ top: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
   }
