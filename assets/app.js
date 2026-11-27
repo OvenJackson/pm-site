@@ -853,7 +853,8 @@
       var subset = tasks.slice(idx);
       var prev = tasks[idx - 1];
       var anchor = (prev && (prev.actual || prev.end)) || tasks[idx].actual || tasks[idx].start || TODAY;
-      var available = workdaysBetween(parse(anchor), parse(rec.plan));
+      var cursorStart = nextWd(parse(anchor));
+      var available = workdaysBetween(cursorStart, parse(rec.plan));
       var origDays = subset.map(function (t) { return Math.max(1, +(t.days || 1)); });
       var totalOrig = origDays.reduce(function (a, b) { return a + b; }, 0);
       var totalNew = Math.max(totalOrig, available);
@@ -864,8 +865,7 @@
         for (var j = 1; j < newDays.length; j++) if (newDays[j] > newDays[longest]) longest = j;
         newDays[longest] += extra;
       }
-      var totalAll = newDays.reduce(function (a, b) { return a + b; }, 0);
-      var cursor = addWdBack(parse(rec.plan), totalAll);
+      var cursor = cursorStart;
       subset.forEach(function (t, i) {
         var days = Math.max(1, newDays[i]);
         var end = addWdForward(cursor, days - 1);
