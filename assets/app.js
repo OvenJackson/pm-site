@@ -857,19 +857,21 @@
       }
       var anchor = (prev && (prev.actual || prev.end)) || tasks[idx].actual || tasks[idx].start || TODAY;
       var anchorDate = parse(anchor);
-      var cursorStart = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), anchorDate.getDate() + 1);
+      var cursorStart = nextWd(anchorDate);
+      var planDate = parse(rec.plan);
+      if (!isWorkdayDate(planDate)) planDate = prevWd(planDate);
       var origDays = subset.map(function (t) { return Math.max(1, +(t.days || 1)); });
       var totalOrig = origDays.reduce(function (a, b) { return a + b; }, 0);
-      var totalCalendar = diffDays(iso(cursorStart), rec.plan) + 1;
-      if (totalCalendar < 1) totalCalendar = totalOrig;
+      var totalWork = workdaysBetween(cursorStart, planDate);
+      if (totalWork < 1) totalWork = totalOrig;
       var newDays = origDays.slice();
-      if (totalCalendar > totalOrig) {
-        var extra = totalCalendar - totalOrig;
+      if (totalWork > totalOrig) {
+        var extra = totalWork - totalOrig;
         var longest = 0;
         for (var j = 1; j < newDays.length; j++) if (newDays[j] > newDays[longest]) longest = j;
         newDays[longest] += extra;
-      } else if (totalCalendar < totalOrig) {
-        var deficit = totalOrig - totalCalendar;
+      } else if (totalWork < totalOrig) {
+        var deficit = totalOrig - totalWork;
         var order = newDays.map(function (d, i) { return i; }).sort(function (a, b) { return newDays[b] - newDays[a]; });
         while (deficit > 0) {
           var changed = false;
@@ -883,11 +885,18 @@
       var cursor = cursorStart;
       subset.forEach(function (t, i) {
         var days = Math.max(1, newDays[i]);
-        var endDate = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + days - 1);
+        var endDate = addWdForward(cursor, days - 1);
         if (!map[t.taskKey]) map[t.taskKey] = [];
         map[t.taskKey].push({ seq: rec.seq, start: iso(cursor), end: iso(endDate), days: days });
-        cursor = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate() + 1);
+        cursor = nextWd(endDate);
       });
+      var lastTask = subset[subset.length - 1];
+      var lastViews = lastTask ? map[lastTask.taskKey] : null;
+      var lastView = (lastViews && lastViews.length) ? lastViews[lastViews.length - 1] : null;
+      if (lastView && planDate >= parse(lastView.start)) {
+        lastView.end = iso(planDate);
+        lastView.days = Math.max(1, workdaysBetween(parse(lastView.start), planDate));
+      }
     });
     Object.keys(map).forEach(function (k) { map[k].sort(function (a, b) { return (+a.seq || 0) - (+b.seq || 0); }); });
     return map;
@@ -3019,6 +3028,7 @@ function outOrderedBalls(arr, prog) {
       if (!rec) return;
       var date = planInput.value;
       if (!date) { planInput.focus(); toast('请选择延期计划完成时间'); return; }
+      if (!isWorkdayDate(parse(date))) { planInput.focus(); toast('延期计划完成时间需选择工作日'); return; }
       var nodeVal = nodeSel ? nodeSel.value : (nodeText ? nodeText.value.trim() : '');
       var nodeName = nodeSel ? nodeSel.options[nodeSel.selectedIndex].getAttribute('data-name') : nodeVal;
       rec.node = nodeVal;
