@@ -841,7 +841,7 @@
     if (!w) return {};
     var recs = (APP.delayRecords || {})[projName] || [];
     if (!recs.length) return {};
-    var tasks = flattenWbs(w);
+    var tasks = flattenWbs(w).map(taskEff);
     var map = {};
     recs.forEach(function (rec) {
       if (!rec.plan || !rec.node) return;
@@ -851,9 +851,13 @@
       }
       if (idx < 0) return;
       var subset = tasks.slice(idx);
-      var prev = tasks[idx - 1];
+      var prev = null;
+      for (var pi = idx - 1; pi >= 0; pi--) {
+        if (!tasks[pi].notDo) { prev = tasks[pi]; break; }
+      }
       var anchor = (prev && (prev.actual || prev.end)) || tasks[idx].actual || tasks[idx].start || TODAY;
-      var cursorStart = nextWd(parse(anchor));
+      var anchorDate = parse(anchor);
+      var cursorStart = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), anchorDate.getDate() + 1);
       var available = workdaysBetween(cursorStart, parse(rec.plan));
       var origDays = subset.map(function (t) { return Math.max(1, +(t.days || 1)); });
       var totalOrig = origDays.reduce(function (a, b) { return a + b; }, 0);
