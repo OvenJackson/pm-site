@@ -877,6 +877,13 @@
         map[t.taskKey].push({ seq: rec.seq, start: iso(cursor), end: iso(end), days: days });
         cursor = nextWd(end);
       });
+      var lastTask = subset[subset.length - 1];
+      var lastViews = lastTask ? map[lastTask.taskKey] : null;
+      if (lastViews && lastViews.length && parse(rec.plan) >= parse(lastView.start)) {
+        var lastView = lastViews[lastViews.length - 1];
+        lastView.end = rec.plan;
+        lastView.days = Math.max(1, workdaysBetween(parse(lastView.start), parse(rec.plan)));
+      }
     });
     Object.keys(map).forEach(function (k) { map[k].sort(function (a, b) { return (+a.seq || 0) - (+b.seq || 0); }); });
     return map;
