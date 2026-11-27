@@ -203,6 +203,7 @@
   };
   var iso = function (d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
   var TODAY = iso(new Date());
+  function refreshToday() { var t = iso(new Date()); if (t !== TODAY) { TODAY = t; return true; } return false; }
   var parse = function (s) { return s ? new Date(s + 'T00:00:00') : null; };
   var diffDays = function (a, b) {
     if (!a || !b) return null;
@@ -277,7 +278,7 @@
       } catch (e) {}
     }, 250);
   }
-  var onlineSaveTimer = null, onlineLastSave = 0, onlineRoNotified = false;
+  var onlineSaveTimer = null, onlineLastSave = 0, onlineRoNotified = false, onlineCheckBusy = false, onlineReloading = false;
   function scheduleOnlineSave() {
     if (!onlineEnabled) return;
     if (onlineReadOnly) {
@@ -293,7 +294,15 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Edit-Token': ONLINE_TOKEN },
           body: JSON.stringify({ app: APP, ov: OV, ts: lastSaveTs })
-        }).then(function (r) { if (!r.ok) toast('在线保存失败，请检查编辑权限'); }).catch(function () {});
+        }).then(function (r) {
+          if (!r.ok) { toast('在线保存失败，请检查编辑权限'); return null; }
+          return r.json();
+        }).then(function (res) {
+          if (res && res.ts) {
+            lastSaveTs = Number(res.ts) || lastSaveTs;
+            try { localStorage.setItem(TS_KEY, String(lastSaveTs)); } catch (e) {}
+          }
+        }).catch(function () {});
       } catch (e) {}
     }, 300);
   }
@@ -304,19 +313,34 @@
       localStorage.setItem(TS_KEY, String(Number(s.ts || 0)));
     } catch (e) {}
   }
+  function applyOnlineState(s) {
+    if (!s) return false;
+    if (s.required && !ONLINE_TOKEN) onlineReadOnly = true;
+    var sts = Number(s.ts || 0);
+    if (sts > lastSaveTs && !onlineReloading) {
+      onlineReloading = true;
+      storeOnlineState(s);
+      location.reload();
+      return true;
+    }
+    return false;
+  }
+  function checkOnlineState() {
+    if (!onlineEnabled || onlineCheckBusy || onlineReloading) return;
+    if (onlineSaveTimer || Date.now() - onlineLastSave < 1200) return;
+    onlineCheckBusy = true;
+    fetch('api/state?t=' + Date.now(), { cache: 'no-store' }).then(function (r) {
+      return r.ok ? r.json() : null;
+    }).then(function (s) {
+      onlineCheckBusy = false;
+      applyOnlineState(s);
+    }).catch(function () { onlineCheckBusy = false; });
+  }
   function startOnlinePolling() {
     if (!onlineMode || onlinePollTimer) return;
-    onlinePollTimer = setInterval(function () {
-      fetch('api/state?t=' + Date.now(), { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (s) {
-        if (!s) return;
-        if (s.required && !ONLINE_TOKEN) onlineReadOnly = true;
-        var sts = Number(s.ts || 0);
-        if (sts > 0 && sts !== lastSaveTs) {
-          storeOnlineState(s);
-          location.reload();
-        }
-      }).catch(function () {});
-    }, 3000);
+    onlinePollTimer = setInterval(checkOnlineState, 2500);
+    window.addEventListener('focus', checkOnlineState);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) checkOnlineState(); });
     window.addEventListener('storage', function (ev) {
       if (ev.key === APP_KEY || ev.key === OV_KEY) location.reload();
     });
@@ -334,7 +358,7 @@
         onlineReadOnly = false;
       }
       var sts = Number(s.ts || 0);
-      if (sts > 0 && sts !== lastSaveTs) {
+      if (sts > lastSaveTs) {
         storeOnlineState(s);
         location.reload();
         return;
@@ -421,7 +445,7 @@
 
   /* ---------------- 可编辑数据（新增/编辑/删除/回收站/排期） ---------------- */
   var APP_KEY = 'pm_app_v1';
-  var APP = { poolAdded: [], poolPatches: {}, keyPatches: {}, recycle: [], purged: [], purgedNames: [], unkeyed: [], wbsOverride: {}, mapPlan: {}, wbsNotDo: {}, wbsHidden: {}, wbsDeleted: [], outsourceMoves: {}, outsourceAdded: [], outsourcePatches: {}, outsourceDeleted: [], outOrder: {}, colorAdded: [], colorPatches: {}, colorDeleted: [] };
+  var APP = { poolAdded: [], poolPatches: {}, keyPatches: {}, recycle: [], purged: [], purgedNames: [], unkeyed: [], wbsOverride: {}, mapPlan: {}, wbsNotDo: {}, wbsHidden: {}, wbsDeleted: [], outsourceMoves: {}, outsourceAdded: [], outsourcePatches: {}, outsourceDeleted: [], outOrder: {}, colorAdded: [], colorPatches: {}, colorDeleted: [], delayRecords: {} };
   try {
     var _app = JSON.parse(localStorage.getItem(APP_KEY) || '{}') || {};
     Object.keys(APP).forEach(function (k) { if (_app[k] != null) APP[k] = _app[k]; });
@@ -515,6 +539,11 @@
     Object.keys(APP.mapPlan || {}).forEach(function (name) {
       D.pool.forEach(function (p) { if (p.name === name) p.plan = APP.mapPlan[name]; });
       D.keyProjects.forEach(function (k) { if (k.name === name) k.plan = APP.mapPlan[name]; });
+    });
+    Object.keys(APP.delayRecords || {}).forEach(function (name) {
+      var recs = cloneObj(APP.delayRecords[name] || []);
+      D.pool.forEach(function (p) { if (p.name === name) p.delayRecords = cloneObj(recs); });
+      D.keyProjects.forEach(function (k) { if (k.name === name) k.delayRecords = cloneObj(recs); });
     });
 
     Object.keys(APP.wbsOverride || {}).forEach(function (name) {
@@ -802,6 +831,52 @@
       late: !notDo && done !== '已完成' && end && end < TODAY
     });
   }
+  function addWdForward(d, n) {
+    var x = new Date(d.getFullYear(), d.getMonth(), d.getDate()), c = 0;
+    while (c < n) { x = nextWd(x); c++; }
+    return x;
+  }
+  function delayedTaskMap(projName) {
+    var w = findWbs(projName);
+    if (!w) return {};
+    var recs = (APP.delayRecords || {})[projName] || [];
+    if (!recs.length) return {};
+    var tasks = flattenWbs(w);
+    var map = {};
+    recs.forEach(function (rec) {
+      if (!rec.plan || !rec.node) return;
+      var idx = -1;
+      for (var i = 0; i < tasks.length; i++) {
+        if (String(tasks[i].seq) === String(rec.node) || tasks[i].name === rec.nodeName) { idx = i; break; }
+      }
+      if (idx < 0) return;
+      var subset = tasks.slice(idx);
+      var prev = tasks[idx - 1];
+      var anchor = (prev && (prev.actual || prev.end)) || tasks[idx].actual || tasks[idx].start || TODAY;
+      var available = workdaysBetween(parse(anchor), parse(rec.plan));
+      var origDays = subset.map(function (t) { return Math.max(1, +(t.days || 1)); });
+      var totalOrig = origDays.reduce(function (a, b) { return a + b; }, 0);
+      var totalNew = Math.max(totalOrig, available);
+      var newDays = origDays.slice();
+      var extra = totalNew - totalOrig;
+      if (extra > 0) {
+        var longest = 0;
+        for (var j = 1; j < newDays.length; j++) if (newDays[j] > newDays[longest]) longest = j;
+        newDays[longest] += extra;
+      }
+      var totalAll = newDays.reduce(function (a, b) { return a + b; }, 0);
+      var cursor = addWdBack(parse(rec.plan), totalAll);
+      subset.forEach(function (t, i) {
+        var days = Math.max(1, newDays[i]);
+        var end = addWdForward(cursor, days - 1);
+        if (!map[t.taskKey]) map[t.taskKey] = [];
+        map[t.taskKey].push({ seq: rec.seq, start: iso(cursor), end: iso(end), days: days });
+        cursor = nextWd(end);
+      });
+    });
+    Object.keys(map).forEach(function (k) { map[k].sort(function (a, b) { return (+a.seq || 0) - (+b.seq || 0); }); });
+    return map;
+  }
   function taskRisk(t) {
     if (!t || t.done === '已完成' || t.notDo || !t.end) return false;
     var d = diffDays(TODAY, t.end);
@@ -855,6 +930,7 @@
     if (p.status === '暂停') return 'paused';
     if (p.status === '未开展') return 'planned';
     if (p.status === '延期') return 'delay';
+    if (p.status === '延期风险') return 'delay';
     if (p.plan && p.plan < TODAY) return 'delay';
     var d = leftDays(p);
     if (d != null && d >= 0 && d <= 7) return 'delay';
@@ -865,6 +941,7 @@
     if (s === 'done') return p.status === '延期' ? { key: 'delay', cls: 'delay', text: '延期' } : { key: 'active', cls: 'active', text: '正常' };
     if (s === 'delay') {
       var d = leftDays(p);
+      if (p.status === '延期风险') return { key: 'risk', cls: 'risk', text: '延期风险' };
       if (p.status !== '延期' && d != null && d >= 0 && d <= 7) return { key: 'risk', cls: 'risk', text: '延期风险' };
       return { key: 'delay', cls: 'delay', text: '延期' };
     }
@@ -873,12 +950,14 @@
     if (s === 'cancel') return { key: 'cancel', cls: 'cancel', text: '取消' };
     return { key: 'active', cls: 'active', text: '正常' };
   }
-  function displayStatusChip(p) { var d = displayStatus(p); return chip(d.cls, d.text); }
+  function displayStatusChip(p) { var dc = delayStatusChip(p); if (dc) return dc; var d = displayStatus(p); return chip(d.cls, d.text); }
   function stateChip(p) {
+    var dc = delayStatusChip(p);
+    if (dc) return dc;
     var s = poolState(p);
     if (s === 'delay' && p.status !== '延期') {
       var d = leftDays(p);
-      if (d != null && d >= 0 && d <= 7) return chip('risk', '延期风险');
+      if (p.status === '延期风险' || (d != null && d >= 0 && d <= 7)) return chip('risk', '延期风险');
       return chip('delay', '延期');
     }
     if (s === 'done' && p.status === '延期') return chip('done', '延期完成');
@@ -888,7 +967,7 @@
     if (k.done === '已完成' || k.status === '取消') return null;
     var d = leftDays(k);
     if (k.status === '延期' || (d != null && d < 0)) return { kind: 'delay', days: d };
-    if (d != null && d >= 0 && d <= 7) return { kind: 'window', days: d };
+    if (k.status === '延期风险' || (d != null && d >= 0 && d <= 7)) return { kind: 'window', days: d };
     return null;
   }
   function personTag(name) {
@@ -929,9 +1008,49 @@
     if (d <= 21) return '<span class="num days-hot">剩 ' + d + ' 天</span>';
     return '<span class="num days-ok">剩 ' + d + ' 天</span>';
   }
+  function delayRecordsOf(p) {
+    if (!p) return [];
+    var mapped = (APP.delayRecords || {})[p.name];
+    if (mapped) return mapped;
+    return p.delayRecords || [];
+  }
+  function delayPlanLines(p) {
+    return delayRecordsOf(p).map(function (r) {
+      return '<span class="delay-plan-line">' + esc(r.seq) + '次延期：' + fmt(r.plan) + '</span>';
+    }).join('');
+  }
+  function delayBadge(p) {
+    var recs = delayRecordsOf(p);
+    if (!recs.length) return '';
+    var tip = recs.length + '次延期\n' + recs.map(function (r) { return r.seq + '次延期：' + (r.plan ? fmt(r.plan) : '未设置'); }).join('\n');
+    return '<span class="delay-badge" title="' + esc(tip) + '">!</span>';
+  }
+  function delayName(name, p) {
+    var has = delayRecordsOf(p).length > 0;
+    return '<span class="delay-name' + (has ? ' has-delay' : '') + '">' + esc(name) + delayBadge(p) + '</span>';
+  }
+  function delayTag(p) {
+    var n = delayRecordsOf(p).length;
+    if (!n) return '';
+    return '<span class="tag delta">' + n + '次延期</span>';
+  }
+  function delayStatusChip(p) {
+    var n = delayRecordsOf(p).length;
+    if (!n || p.done === '已完成') return '';
+    var label = n === 1 ? '延期' : n + '次延期';
+    var light = Math.max(36, 86 - (n - 1) * 12);
+    var fg = light < 68 ? '#fff' : '#9E1B22';
+    var border = 'hsl(357 62% ' + Math.max(28, light - 10) + '%)';
+    return '<span class="chip delay-depth" style="background:hsl(357 72% ' + light + '%);color:' + fg + ';border-color:' + border + '">' + esc(label) + '</span>';
+  }
+  function delayEditButton(p) {
+    if (!p) return '';
+    var k = displayStatus(p).key;
+    if (k !== 'delay' && k !== 'risk') return '';
+    return '<div class="delay-field"><span>延期管理</span><button type="button" class="btn delay-btn" data-delay-open>延期</button></div>';
+  }
   function planRange(p) {
-    if (!p.plan) return '—';
-    return fmt(p.plan);
+    return '<span class="plan-main">' + (p.plan ? fmt(p.plan) : '—') + '</span>' + delayPlanLines(p);
   }
 
   /* ---------------- 汇总数字 ---------------- */
@@ -979,6 +1098,7 @@
   };
 
   function render() {
+    refreshToday();
     var id = (location.hash || '').replace(/^#\/?/, '') || 'overview';
     if (!VIEWS[id]) id = 'overview';
     closeDrawer();
@@ -1504,11 +1624,13 @@
   function mapChip(k) {
     var st = mapKeyState(k);
     var dateTxt = k.plan ? fmt(k.plan) : '计划待定';
+    var recs = delayRecordsOf(k);
+    var delayTxt = recs.length ? '\n' + recs.length + '次延期：' + recs.map(function (r) { return fmt(r.plan); }).join(' / ') : '';
     var title = k.name + ' · ' + (k.type || '') + '\n负责人 ' + (k.owner || '—') +
-      ' · 优先级 ' + (k.priority || '—') + '\n计划完成 ' + dateTxt +
+      ' · 优先级 ' + (k.priority || '—') + '\n计划完成 ' + dateTxt + delayTxt +
       (k.done === '已完成' ? '\n已完成' + (k.actual ? '（实际 ' + fmt(k.actual) + '）' : '') : '');
     return '<button class="map-chip kg-chip ' + st + '" data-act="open-key" data-id="' + esc(k.id) + '" data-maptype="' + esc(k.type) + '" title="' + esc(title) + '">' +
-      esc((k.done === '已完成' ? '✓ ' : '') + k.name) + '</button>';
+      delayName((k.done === '已完成' ? '✓ ' : '') + k.name, k) + '</button>';
   }
 
   function moveMapChip(id, type, label) {
@@ -1869,14 +1991,14 @@
       var p = x.p;
       h += '<tr data-act="open-pool" data-id="' + p.id + '" class="' + (x.s === 'cancel' ? 'dim' : '') + '">';
       var isKeyProj = p.isKey || D.keyProjects.some(function (k) { return k.name === p.name; });
-      h += '<td class="name">' + (isKeyProj ? '<span class="key-star">⭐</span>' : '') + esc(p.name) + (p.must === '✅' ? '<small>必做项</small>' : '') + '</td>';
+      h += '<td class="name">' + (isKeyProj ? '<span class="key-star">⭐</span>' : '') + delayName(p.name, p) + (p.must === '✅' ? '<small>必做项</small>' : '') + '</td>';
       h += '<td class="nowrap">' + typeTag(p.type) + '</td>';
       h += '<td class="nowrap">' + personTag(p.owner) + '</td>';
       h += '<td>' + (p.priority ? tag(p.priority, p.priority === 'P0' ? 'rust' : p.priority === 'P1' ? 'amber' : 'gray') : '<span class="faint">—</span>') + '</td>';
       h += '<td class="nowrap muted">' + esc(p.phase || '—') + '</td>';
       var pStart = projectWbsInfo(p.name).firstStart || p.started;
       h += '<td class="num">' + fmt(pStart) + '</td>';
-      h += '<td class="num">' + planRange(p) + '</td>';
+      h += '<td class="num plan-cell">' + planRange(p) + '</td>';
       h += '<td>' + leftHTML(p) + '</td>';
       h += '<td>' + displayStatusChip(p) + '</td>';
       h += '<td class="nowrap">' + doneTag(p.done) + '</td>';
@@ -1969,17 +2091,20 @@
       h += '<div class="kc-name-row">';
       h += '<div class="kc-month"><b>' + mBig + '</b><span>' + mSmall + '</span></div>';
       h += '<div class="kc-title-wrap">';
-      h += '<h4 class="kc-name">' + esc(k.name) + (k.priority ? tag(k.priority, k.priority === 'P0' ? 'rust' : k.priority === 'P1' ? 'amber' : 'gray') : '') + typeTag(k.type) + personTag(k.owner) + '</h4>';
+      h += '<h4 class="kc-name">' + delayName(k.name, k) + (k.priority ? tag(k.priority, k.priority === 'P0' ? 'rust' : k.priority === 'P1' ? 'amber' : 'gray') : '') + typeTag(k.type) + personTag(k.owner) + '</h4>';
       var kSub = ws ? 'WBS ' + ws.pct + '% · ' + ws.done + '/' + ws.total + ' 任务' : '未建立 WBS';
       h += '<div class="kc-sub"><span class="kc-sub-base">' + kSub + '</span></div>';
       h += '</div></div>';
       h += '<div class="kc-prog"><div class="bar thin"><i class="' + (ws && ws.late ? 'delay' : ws && ws.tasks.filter(taskRisk).length ? 'risk' : '') + '" style="width:' + (ws ? ws.pct : 0) + '%"></i></div><b>' + (ws ? ws.pct + '%' : '—') + '</b></div>';
-      if (ws && ws.next) h += '<div class="kc-note"><span class="mr-next">下一任务：' + esc(ws.next.name) + ' · 计划完成 ' + fmt(ws.next.end || ws.next.start) + '</span></div>';
+      if (ws && ws.next) {
+        var nextDelay = delayRecordsOf(k).slice(-1)[0];
+        h += '<div class="kc-note"><span class="mr-next">下一任务：' + esc(ws.next.name) + ' · 计划完成 ' + fmt(ws.next.end || ws.next.start) + (nextDelay && nextDelay.plan ? ' <span class="delay-next">· ' + esc(nextDelay.seq) + '次延期：' + fmt(nextDelay.plan) + '</span>' : '') + '</span></div>';
+      }
       h += '</div>';
       h += '<div class="kc-right">';
       h += '<div class="ov-statusline">' + displayStatusChip(k) + doneTag(k.done) + '</div>';
-      h += '<span class="plan-chip">计划完成 ' + fmt(k.plan) + '</span>';
-      h += '<span class="plan-chip">实际完成 ' + fmt(k.actual) + '</span>';
+      h += '<span class="plan-chip">计划完成 ' + fmt(k.plan) + '</span>' + delayPlanLines(k);
+      if (k.done === '已完成') h += '<span class="plan-chip">实际完成 ' + fmt(k.actual) + '</span>';
       h += '<span class="mr-days ' + (keyRiskInfo(k) ? 'hot' : '') + '">' + (k.done === '已完成' ? leftHTML(k) : d == null ? '未设定计划' : d < 0 ? '延期 ' + Math.abs(d) + ' 天' : '剩 ' + d + ' 天') + '</span>';
       h += '<span class="row-actions"><button data-act="edit-key" data-id="' + k.id + '">编辑</button><button data-act="del-key" data-id="' + k.id + '">删除</button></span>';
       h += '</div></div>';
@@ -2473,17 +2598,20 @@ function outOrderedBalls(arr, prog) {
     }
     st.month = month;
     var rows = monthTaskRows(month);
+    var dmCache = {};
     var h = '<div class="panel-body">';
     h += '<div class="table-scroll"><table class="tbl task-tbl"><thead><tr><th style="width:96px">产品/项目</th><th style="width:52px">序号</th><th>任务</th><th style="width:120px">责任部门</th><th style="width:54px">工时</th><th style="width:168px">计划时间</th><th style="width:112px">实际完成</th><th style="width:104px">状态</th><th style="width:82px">完成情况</th></tr></thead><tbody>';
     rows.forEach(function (r) {
       var t = r.t, isDone = t.done === '已完成';
+      var dm = dmCache[r.w.name] || (dmCache[r.w.name] = delayedTaskMap(r.w.name));
+      var dviews = dm[t.taskKey] || [];
       h += '<tr class="' + (t.notDo ? 'notdo' : t.late ? 'overdue' : taskRisk(t) ? 'risk' : '') + '" data-act="goto-wbs" data-id="' + esc(r.w.name) + '">';
       h += '<td class="name" style="white-space:normal;word-break:break-all">' + (isKeyWbsName(r.w.name) ? '⭐' : '') + esc(r.w.name) + '</td>';
       h += '<td class="num faint">' + esc(t.seq) + '</td>';
       h += '<td class="t-name"><small>' + esc(r.ph.name) + '</small>' + (t.milestone ? '<span class="ms">★</span>' : '') + esc(t.name) + (t.output ? '<small>' + esc(t.output) + '</small>' : '') + '</td>';
       h += '<td class="muted" style="font-size:10.5px">' + esc(t.dept) + '</td>';
-      h += '<td class="num">' + (t.days == null ? '—' : t.days) + '</td>';
-      h += '<td class="num" style="font-size:10.5px">' + fmt(t.start) + '<span class="faint"> → </span>' + fmt(t.end) + '</td>';
+      h += '<td class="num">' + (t.days == null ? '—' : t.days) + dviews.map(function (v) { return '<small class="delay-sub">' + esc(v.seq) + '次延期：' + v.days + ' 天</small>'; }).join('') + '</td>';
+      h += '<td class="num" style="font-size:10.5px">' + fmt(t.start) + '<span class="faint"> → </span>' + fmt(t.end) + dviews.map(function (v) { return '<small class="delay-sub">' + esc(v.seq) + '次延期：' + fmt(v.start) + ' → ' + fmt(v.end) + '</small>'; }).join('') + '</td>';
       h += '<td><input class="date-in" type="date" value="' + esc(t.actual || '') + '" data-wbsactual="' + esc(t.taskKey) + '" title="点击选择实际完成日期"></td>';
       h += '<td class="nowrap">' + statusSelectHtml(t) + '</td>';
       h += '<td><button class="done-toggle ' + (isDone ? 'on' : '') + '" data-wbsdone="' + esc(t.taskKey) + '"' + (t.notDo ? ' disabled' : '') + '><span class="box"></span>' + (isDone ? '已完成' : '未完成') + '</button></td>';
@@ -2504,6 +2632,7 @@ function outOrderedBalls(arr, prog) {
 
   function renderTaskList(proj, st) {
     var h = '';
+    var delayMap = delayedTaskMap(proj.name);
     sortedPhases(proj).forEach(function (ph, pi) {
       var tasks = filterWbsTasks(ph.tasks.map(taskEff), st.only || 'all');
       if (!tasks.length) return;
@@ -2523,12 +2652,13 @@ function outOrderedBalls(arr, prog) {
       tasks.forEach(function (t) {
         var isDone = t.done === '已完成';
         var stt = taskStatus(t);
+        var dviews = delayMap[t.taskKey] || [];
         h += '<tr class="' + (t.notDo ? 'notdo' : t.late ? 'overdue' : taskRisk(t) ? 'risk' : '') + '">';
         h += '<td class="num faint">' + esc(t.seq) + '</td>';
         h += '<td class="t-name">' + (t.milestone ? '<span class="ms">★</span>' : '') + esc(t.name) + (t.output ? '<small>' + esc(t.output) + (t.note ? ' · ' + esc(t.note) : '') + '</small>' : (t.note ? '<small>' + esc(t.note) + '</small>' : '')) + '</td>';
         h += '<td class="muted" style="font-size:10.5px">' + esc(t.dept) + '</td>';
-        h += '<td class="num">' + (t.days == null ? '—' : t.days) + '</td>';
-        h += '<td class="num" style="font-size:10.5px">' + fmt(t.start) + '<span class="faint"> → </span>' + fmt(t.end) + '</td>';
+        h += '<td class="num">' + (t.days == null ? '—' : t.days) + dviews.map(function (v) { return '<small class="delay-sub">' + esc(v.seq) + '次延期：' + v.days + ' 天</small>'; }).join('') + '</td>';
+        h += '<td class="num" style="font-size:10.5px">' + fmt(t.start) + '<span class="faint"> → </span>' + fmt(t.end) + dviews.map(function (v) { return '<small class="delay-sub">' + esc(v.seq) + '次延期：' + fmt(v.start) + ' → ' + fmt(v.end) + '</small>'; }).join('') + '</td>';
         h += '<td><input class="date-in" type="date" value="' + esc(t.actual || '') + '" data-wbsactual="' + esc(t.taskKey) + '" title="点击选择实际完成日期"></td>';
         h += '<td class="nowrap">' + statusSelectHtml(t) + '</td>';
         h += '<td><button class="done-toggle ' + (isDone ? 'on' : '') + '" data-wbsdone="' + esc(t.taskKey) + '"' + (t.notDo ? ' disabled' : '') + '><span class="box"></span>' + (isDone ? '已完成' : '未完成') + '</button></td>';
@@ -2658,7 +2788,7 @@ function outOrderedBalls(arr, prog) {
     var typeOpts = PROJECT_TYPES.map(function (t) { return '<option value="' + esc(t) + '"' + (src && src.type === t ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('');
     var priOpts = ['', 'P0', 'P1', 'P2'].map(function (p) { return '<option value="' + p + '"' + (src && (src.priority || '') === p ? ' selected' : '') + '>' + (p || '无') + '</option>'; }).join('');
     var curStatus = src && src.status ? src.status : '未开展';
-    var editableStatus = ['正常', '暂停', '取消', '未开展'];
+    var editableStatus = ['正常', '延期风险', '延期', '暂停', '取消', '未开展'];
     var statusOpts = editableStatus.map(function (s) { return '<option value="' + s + '"' + (curStatus === s ? ' selected' : '') + '>' + s + '</option>'; }).join('');
     if (editableStatus.indexOf(curStatus) < 0) statusOpts = '<option value="" selected disabled>—</option>' + statusOpts;
     function switchHtml(name, label, on) {
@@ -2672,6 +2802,7 @@ function outOrderedBalls(arr, prog) {
     h += '<label>项目成员<input name="owner" value="' + esc(src ? src.owner || '' : '') + '"></label>';
     h += '<label>计划完成时间（中试转产）<input type="date" name="plan" value="' + esc(src && src.plan ? src.plan : '') + '"></label>';
     h += '<label>优先级<select name="priority">' + priOpts + '</select></label>';
+    h += delayEditButton(src);
     h += '<div class="form-section full">设置</div>';
     h += '<label>WBS 项目周期<select name="months"><option value="">请选择</option><option value="3"' + (months === '3' ? ' selected' : '') + '>3 个月（原料替代 / 性能优化）</option><option value="4"' + (months === '4' ? ' selected' : '') + '>4 个月</option><option value="6"' + (months === '6' ? ' selected' : '') + '>6 个月</option></select></label>';
     h += '<label>WBS 锚点任务（可选）<select name="anchor"><option value="">—</option>' + ['1.4|CDCP 产品概念决策评审', '2.6|项目立项', '3.2|TR3 小试技术评审', '4.2|TR4 中试技术评审', '5.4|ADCP 产品中试转产评审'].map(function (x) { var a = x.split('|'); return '<option value="' + a[0] + '"' + (anchorVal === a[0] ? ' selected' : '') + '>' + a[0] + ' ' + a[1] + '</option>'; }).join('') + '</select></label>';
@@ -2684,6 +2815,8 @@ function outOrderedBalls(arr, prog) {
     h += '</form>';
     openModal(mode === 'pool-add' ? '新增项目' : (mode === 'key-edit' ? '编辑重点项目' : '编辑项目'), h);
     var form = $('#projForm');
+    var delayBtn = form.querySelector('[data-delay-open]');
+    if (delayBtn) delayBtn.addEventListener('click', function () { openDelayModal(src, mode === 'key-edit' ? 'key' : 'pool'); });
     var planEl = form.elements['plan'], anchorEl = form.elements['anchor'], anchorDateEl = form.elements['anchorDate'], typeEl = form.elements['type'], monthsEl = form.elements['months'];
     var isKeyEl = form.elements['isKey'], genWbsEl = form.elements['genWbs'];
     var swKey = form.querySelector('[data-switch="isKey"]'), swGen = form.querySelector('[data-switch="genWbs"]');
@@ -2765,7 +2898,142 @@ function outOrderedBalls(arr, prog) {
     });
   }
 
-  function poolAddRowHtml() {
+  function openDelayModal(project, kind) {
+    if (!project) return;
+    refreshToday();
+    closeDelayModal();
+    var records = cloneObj(delayRecordsOf(project));
+    records.sort(function (a, b) { return (+a.seq || 0) - (+b.seq || 0); });
+    records.forEach(function (r, i) { r.seq = i + 1; });
+    var hadRecords = records.length > 0;
+    if (!records.length) records.push({ seq: 1, node: '', nodeName: '', plan: '' });
+    var last = records[records.length - 1];
+    if (hadRecords && project.done !== '已完成') {
+      var maxSeq = records.reduce(function (m, r) { return Math.max(m, +r.seq || 0); }, 0);
+      records.push({ seq: maxSeq + 1, node: last.node || '', nodeName: last.nodeName || '', plan: '' });
+    }
+    var w = findWbs(project.name);
+    var tasks = w ? flattenWbs(w) : [];
+    var nodeSelect = tasks.length
+      ? '<select id="delayNode">' + tasks.map(function (t) { return '<option value="' + esc(t.seq) + '" data-name="' + esc(t.name) + '">' + esc(t.seq) + ' ' + esc(t.name) + '</option>'; }).join('') + '</select>'
+      : '<input id="delayNodeText" placeholder="请输入延期节点">';
+    var h = '<div class="delay-mask" id="delayMask"><div class="modal delay-modal" role="dialog" aria-modal="true">';
+    h += '<div class="modal-head"><b>延期管理 · ' + esc(project.name) + '</b><button class="icon-btn" type="button" id="delayClose" title="关闭">✕</button></div>';
+    h += '<div class="modal-body">';
+    h += '<div class="delay-grid">';
+    h += '<label>序号<input id="delaySeq" readonly></label>';
+    h += '<label>延期次数<input id="delayCount" type="number" min="1" max="99" step="1" value="1" title="1 代表第 1 次延期"></label>';
+    h += '<label>延期节点' + nodeSelect + '</label>';
+    h += '<label>延期计划完成时间<input type="date" id="delayPlan"></label>';
+    h += '</div>';
+    h += '<div class="delay-history" id="delayHistory"></div>';
+    h += '<div class="form-actions delay-actions"><button type="button" class="btn danger-solid delay-reset" id="delayReset">一键重置</button><button type="button" class="btn" id="delayCancel">取消</button><button type="button" class="btn primary" id="delaySave">保存</button></div>';
+    h += '</div></div></div>';
+    document.body.insertAdjacentHTML('beforeend', h);
+    var mask = $('#delayMask');
+    var countInput = $('#delayCount'), seqInput = $('#delaySeq'), planInput = $('#delayPlan');
+    var nodeSel = $('#delayNode'), nodeText = $('#delayNodeText');
+    var currentSeq = 1;
+    function findRec(seq) { return records.filter(function (r) { return +r.seq === +seq; })[0]; }
+    function renderHistory() {
+      $('#delayHistory').innerHTML = '<b>延期记录</b>' + records.filter(function (r) { return r.plan; }).map(function (r) {
+        return '<span class="delay-history-item">' + esc(r.seq) + '次 · ' + esc(r.nodeName || r.node || '—') + ' · ' + fmt(r.plan) + '<button type="button" class="delay-record-del" data-delseq="' + esc(r.seq) + '" title="删除该次延期">×</button></span>';
+      }).join('');
+    }
+    function loadSeq(seq) {
+      var rec = findRec(seq);
+      if (!rec) {
+        var lastRec = records[records.length - 1] || {};
+        rec = { seq: seq, node: lastRec.node || '', nodeName: lastRec.nodeName || '', plan: '' };
+        records.push(rec);
+        records.sort(function (a, b) { return (+a.seq || 0) - (+b.seq || 0); });
+      }
+      currentSeq = rec.seq;
+      seqInput.value = rec.seq;
+      countInput.value = rec.seq;
+      if (nodeSel) {
+        var found = false;
+        for (var i = 0; i < nodeSel.options.length; i++) {
+          if (nodeSel.options[i].value === String(rec.node || '')) { nodeSel.selectedIndex = i; found = true; break; }
+        }
+        if (!found && rec.node) { nodeSel.insertAdjacentHTML('afterbegin', '<option value="' + esc(rec.node) + '" data-name="' + esc(rec.nodeName || '') + '">' + esc(rec.node) + ' ' + esc(rec.nodeName || '') + '</option>'); nodeSel.value = String(rec.node); }
+      } else if (nodeText) nodeText.value = rec.nodeName || rec.node || '';
+      planInput.value = rec.plan || '';
+      renderHistory();
+    }
+    loadSeq(records[records.length - 1].seq);
+    countInput.addEventListener('change', function () {
+      var seq = Math.max(1, Math.min(99, Math.floor(+this.value || 1)));
+      loadSeq(seq);
+    });
+    function persist(recs) {
+      APP.delayRecords = APP.delayRecords || {};
+      APP.delayRecords[project.name] = cloneObj(recs);
+      D.pool.forEach(function (p) { if (p.name === project.name) p.delayRecords = cloneObj(recs); });
+      D.keyProjects.forEach(function (k) { if (k.name === project.name) k.delayRecords = cloneObj(recs); });
+      project.delayRecords = cloneObj(recs);
+      appSave();
+      render();
+    }
+    mask.addEventListener('click', function (ev) { if (ev.target === mask) closeDelayModal(); });
+    $('#delayClose').addEventListener('click', closeDelayModal);
+    $('#delayCancel').addEventListener('click', closeDelayModal);
+    $('#delayHistory').addEventListener('click', function (ev) {
+      var b = ev.target.closest('[data-delseq]');
+      if (!b) return;
+      var dseq = +b.getAttribute('data-delseq');
+      if (!confirm('确定删除第 ' + dseq + ' 次延期记录？')) return;
+      var saved = records.filter(function (r) { return r.plan && +r.seq !== dseq; });
+      saved.sort(function (a, b) { return (+a.seq || 0) - (+b.seq || 0); });
+      saved.forEach(function (r, i) { r.seq = i + 1; });
+      records = saved;
+      persist(records);
+      if (!records.length) { closeDelayModal(); toast('已删除延期记录'); return; }
+      loadSeq(records[records.length - 1].seq);
+      toast('已删除延期记录');
+    });
+    $('#delayReset').addEventListener('click', function () {
+      if (!confirm('确定清空该项目的全部延期记录？')) return;
+      records = [];
+      persist(records);
+      closeDelayModal();
+      toast('已清空延期记录');
+    });
+    $('#delaySave').addEventListener('click', function () {
+      var rec = findRec(currentSeq);
+      if (!rec) return;
+      var date = planInput.value;
+      if (!date) { planInput.focus(); toast('请选择延期计划完成时间'); return; }
+      var nodeVal = nodeSel ? nodeSel.value : (nodeText ? nodeText.value.trim() : '');
+      var nodeName = nodeSel ? nodeSel.options[nodeSel.selectedIndex].getAttribute('data-name') : nodeVal;
+      rec.node = nodeVal;
+      rec.nodeName = nodeName;
+      rec.plan = date;
+      records = records.filter(function (r) { return r.plan || +r.seq === +rec.seq; });
+      records.sort(function (a, b) { return (+a.seq || 0) - (+b.seq || 0); });
+      persist(records);
+      closeDelayModal();
+      toast('延期信息已保存');
+    });
+  }
+  function closeDelayModal() {
+    var m = document.getElementById('delayMask');
+    if (m) m.parentNode.removeChild(m);
+  }
+  function clearDelayRecords(name) {
+    if (!name) return;
+    if (!confirm('确定删除“' + name + '”的全部延期记录？')) return;
+    APP.delayRecords = APP.delayRecords || {};
+    APP.delayRecords[name] = [];
+    D.pool.forEach(function (p) { if (p.name === name) p.delayRecords = []; });
+    D.keyProjects.forEach(function (k) { if (k.name === name) k.delayRecords = []; });
+    appSave();
+    closeDrawer();
+    render();
+    toast('已删除延期记录');
+  }
+
+function poolAddRowHtml() {
     var typeOpts = PROJECT_TYPES.map(function (t) { return '<option value="' + esc(t) + '">' + esc(t) + '</option>'; }).join('');
     var statusOpts = ['未开展', '正常', '暂停'].map(function (t) { return '<option value="' + t + '">' + t + '</option>'; }).join('');
     var priOpts = ['', 'P0', 'P1', 'P2'].map(function (t) { return '<option value="' + t + '">' + (t || '无') + '</option>'; }).join('');
@@ -2922,6 +3190,10 @@ function outOrderedBalls(arr, prog) {
           WBS_BY_NORM[normalize(data.name)] = w0;
         }
         APP.mapPlan[data.name] = p.plan;
+        if (APP.delayRecords && APP.delayRecords[oldName]) {
+          APP.delayRecords[data.name] = APP.delayRecords[oldName];
+          delete APP.delayRecords[oldName];
+        }
       }
       syncWbsPlan(data.name, oldPlan, p.plan, data);
     } else if (mode === 'key-edit') {
@@ -3045,6 +3317,7 @@ function outOrderedBalls(arr, prog) {
           APP.poolAdded = (APP.poolAdded || []).filter(function (x) { return x.id !== snap2.project.id; });
           delete APP.wbsOverride[snap2.project.name];
           delete APP.mapPlan[snap2.project.name];
+          if (APP.delayRecords) delete APP.delayRecords[snap2.project.name];
           appSave(); toast('已彻底删除');
         }
         openRecycle(); render();
@@ -3064,6 +3337,7 @@ function outOrderedBalls(arr, prog) {
   function wbsDrawerSection(w) {
     if (!w) return '';
     var s = wbsStats(w);
+    var dm = delayedTaskMap(w.name);
     var h = '<div class="drawer-section"><div class="ds-title">WBS 进度</div>';
     h += '<div class="progress-line"><div class="bar"><i class="' + (s.late ? 'delay' : '') + '" style="width:' + s.pct + '%"></i></div><b>' + s.pct + '%</b><span class="faint" style="font-size:10.5px">' + s.done + '/' + s.total + ' 任务 · 延期 ' + s.late + '</span></div>';
     h += '<div class="timeline" style="margin-top:14px">';
@@ -3074,8 +3348,17 @@ function outOrderedBalls(arr, prog) {
       var risky = tt.some(taskRisk);
       var ends = tt.map(function (t) { return t.end; }).filter(Boolean).sort();
       var planEnd = ends.length ? ends[ends.length - 1] : null;
+      var dEnds = {};
+      tt.forEach(function (t) {
+        (dm[t.taskKey] || []).forEach(function (v) {
+          if (!dEnds[v.seq] || String(v.end) > String(dEnds[v.seq])) dEnds[v.seq] = v.end;
+        });
+      });
+      var delayTxt = Object.keys(dEnds).sort(function (a, b) { return (+a || 0) - (+b || 0); }).map(function (seq) {
+        return '<span class="delay-inline">' + esc(seq) + '次延期：' + fmt(dEnds[seq]) + '</span>';
+      }).join('');
       h += '<div class="tl-item ' + (dd === tt.length ? 'done' : lateN ? 'delay' : risky ? 'risk' : '') + '">';
-      h += '<span class="tl-dot"></span><div class="tl-main"><b>' + esc(ph.name) + '</b><span>' + dd + ' / ' + tt.length + ' 完成 · ' + pct(dd, tt.length) + '%' + (planEnd ? ' · 计划完成 ' + fmt(planEnd) : '') + '</span></div></div>';
+      h += '<span class="tl-dot"></span><div class="tl-main"><b>' + esc(ph.name) + '</b><span>' + dd + ' / ' + tt.length + ' 完成 · ' + pct(dd, tt.length) + '%' + (planEnd ? ' · 计划完成 ' + fmt(planEnd) : '') + delayTxt + '</span></div></div>';
     });
     h += '</div>';
     h += '<button class="btn" style="margin-top:6px;border:1px solid var(--line-strong);background:var(--card);padding:6px 12px;font-size:11.5px" data-act="goto-wbs" data-id="' + esc(w.name) + '">打开 WBS 任务清单 →</button>';
@@ -3089,13 +3372,13 @@ function outOrderedBalls(arr, prog) {
     var key = D.keyProjects.filter(function (k) { return k.name === p.name; })[0];
     var w = wbsFor(p.name);
     var pinfo = projectWbsInfo(p.name);
-    var h = '<h3>' + esc(p.name) + '</h3><div class="drawer-tags">' + displayStatusChip(p) + typeTag(p.type) + (p.priority ? tag(p.priority, p.priority === 'P0' ? 'rust' : 'amber') : '') + (p.must === '✅' ? tag('必做项', 'teal') : '') + '</div>';
+    var h = '<h3>' + delayName(p.name, p) + '</h3><div class="drawer-tags">' + displayStatusChip(p) + typeTag(p.type) + (p.priority ? tag(p.priority, p.priority === 'P0' ? 'rust' : 'amber') : '') + (p.must === '✅' ? tag('必做项', 'teal') : '') + '</div>';
     if (p.note) h += '<div class="drawer-section"><div class="ds-title">备注 / 风险说明</div><div class="note-box">' + esc(p.note) + '</div></div>';
     h += '<div class="drawer-section"><div class="ds-title">项目信息</div><dl class="kv">';
     h += '<dt>负责人</dt><dd>' + personTag(p.owner) + '</dd>';
     h += '<dt>启动时间</dt><dd><input class="date-in" type="date" value="' + esc(pinfo.firstStart || p.started || '') + '" data-pooledit="start" data-id="' + p.id + '"></dd>';
     h += '<dt>立项时间</dt><dd><input class="date-in" type="date" value="' + esc(pinfo.kickActual || p.founded || '') + '" data-pooledit="kick" data-id="' + p.id + '"></dd>';
-    h += '<dt>计划完成时间</dt><dd><input class="date-in" type="date" value="' + esc(p.plan || '') + '" data-pooledit="plan" data-id="' + p.id + '">' + (p.plan && p.done !== '已完成' ? ' <span class="faint">（' + (leftDays(p) < 0 ? '延期 ' + Math.abs(leftDays(p)) + ' 天' : '剩 ' + leftDays(p) + ' 天') + '）</span>' : '') + '</dd>';
+    h += '<dt>计划完成时间</dt><dd><input class="date-in" type="date" value="' + esc(p.plan || '') + '" data-pooledit="plan" data-id="' + p.id + '">' + (p.plan && p.done !== '已完成' ? ' <span class="faint">（' + (leftDays(p) < 0 ? '延期 ' + Math.abs(leftDays(p)) + ' 天' : '剩 ' + leftDays(p) + ' 天') + '）</span>' : '') + delayPlanLines(p) + '</dd>';
     h += '<dt>实际完成时间</dt><dd><input class="date-in" type="date" value="' + esc(p.actual || '') + '" data-pooledit="actual" data-id="' + p.id + '"></dd>';
     h += '<dt>状态 / 完成情况</dt><dd>' + displayStatusChip(p) + doneTag(p.done) + '</dd>';
     h += '</dl></div>';
@@ -3157,13 +3440,13 @@ function outOrderedBalls(arr, prog) {
     if (!k) return;
     var w = wbsFor(k.name);
     var kinfo = projectWbsInfo(k.name);
-    var h = '<h3>' + esc(k.name) + '</h3><div class="drawer-tags">' + displayStatusChip(k) + typeTag(k.type) + (k.priority ? tag(k.priority, k.priority === 'P0' ? 'rust' : 'amber') : '') + (w ? tag('WBS 已拆解', 'teal') : '') + '</div>';
+    var h = '<h3>' + delayName(k.name, k) + '</h3><div class="drawer-tags">' + displayStatusChip(k) + typeTag(k.type) + (k.priority ? tag(k.priority, k.priority === 'P0' ? 'rust' : 'amber') : '') + (w ? tag('WBS 已拆解', 'teal') : '') + '</div>';
     if (k.note) h += '<div class="drawer-section"><div class="ds-title">备注 / 跟踪说明</div><div class="note-box">' + esc(k.note) + '</div></div>';
     h += '<div class="drawer-section"><div class="ds-title">项目信息</div><dl class="kv">';
     h += '<dt>负责人</dt><dd>' + personTag(k.owner) + '</dd>';
     h += '<dt>启动时间</dt><dd>' + fmt(kinfo.firstStart) + '</dd>';
     h += '<dt>立项时间</dt><dd>' + fmt(kinfo.kickActual) + '</dd>';
-    h += '<dt>计划完成时间</dt><dd>' + fmt(k.plan) + (k.plan && k.done !== '已完成' ? ' <span class="faint">（' + (leftDays(k) < 0 ? '延期 ' + Math.abs(leftDays(k)) + ' 天' : '剩 ' + leftDays(k) + ' 天') + '）</span>' : '') + '</dd>';
+    h += '<dt>计划完成时间</dt><dd>' + fmt(k.plan) + (k.plan && k.done !== '已完成' ? ' <span class="faint">（' + (leftDays(k) < 0 ? '延期 ' + Math.abs(leftDays(k)) + ' 天' : '剩 ' + leftDays(k) + ' 天') + '）</span>' : '') + delayPlanLines(k) + '</dd>';
     h += '<dt>实际完成时间</dt><dd>' + fmt(k.actual) + '</dd>';
     h += '<dt>状态 / 完成情况</dt><dd>' + displayStatusChip(k) + doneTag(k.done) + '</dd>';
     h += '</dl></div>';
@@ -3184,8 +3467,10 @@ function outOrderedBalls(arr, prog) {
     h += '<dt>推导状态</dt><dd>' + chip(item.status) + '</dd>';
     h += '</dl></div>';
     if (matched) {
-      h += '<div class="drawer-section"><div class="ds-title">匹配到工作池项目</div><div class="note-box" style="border-left-color:var(--blue)"><b>' + esc(matched.name) + '</b><br>' + esc(matched.owner) + ' · ' + esc(matched.type) + ' · 计划完成 ' + fmt(matched.plan) + '<br>状态：' + esc(matched.status) + ' · ' + esc(poolState(matched) === 'done' ? '已完成' : '未完成') + '</div>';
+      h += '<div class="drawer-section"><div class="ds-title">匹配到工作池项目</div><div class="note-box" style="border-left-color:var(--blue)"><b>' + esc(matched.name) + '</b><br>' + esc(matched.owner) + ' · ' + esc(matched.type) + ' · 计划完成 ' + fmt(matched.plan) + delayPlanLines(matched) + '<br>状态：' + esc(matched.status) + ' · ' + esc(poolState(matched) === 'done' ? '已完成' : '未完成') + '</div>';
       h += '<button class="panel-link" style="margin-top:10px" data-act="open-pool" data-id="' + matched.id + '">打开项目详情 →</button></div>';
+      var mw = wbsFor(matched.name);
+      if (mw) h += wbsDrawerSection(mw);
     } else {
       h += '<div class="drawer-section"><div class="ds-title">说明</div><div class="note-box">该规划条目未直接匹配到工作池项目，状态按原文推导。</div></div>';
     }
@@ -3795,6 +4080,15 @@ function outOrderedBalls(arr, prog) {
         else if (act === 'color-add') { openColorAdd(); }
         else if (act === 'color-edit') { closeDrawer(); openColorEdit(id); }
         else if (act === 'color-del') { deleteColor(id); }
+        else if (act === 'delay-clear') { clearDelayRecords(t.getAttribute('data-name')); }
+        else if (act === 'delay-clear') {
+          var dname = t.getAttribute('data-name');
+          if (!confirm('确定删除“' + dname + '”的全部延期记录？')) return;
+          delete APP.delayRecords[dname];
+          D.pool.forEach(function (p) { if (p.name === dname) p.delayRecords = []; });
+          D.keyProjects.forEach(function (k) { if (k.name === dname) k.delayRecords = []; });
+          appSave(); closeDrawer(); render(); toast('已删除延期记录');
+        }
         else if (act === 'goto-wbs') {
           state.wbs.proj = id; state.wbs.mode = 'list';
           closeDrawer();
@@ -4076,6 +4370,7 @@ function outOrderedBalls(arr, prog) {
   if (!location.hash) location.hash = '#/overview';
   window.addEventListener('hashchange', render);
   render();
+  setInterval(function () { if (refreshToday()) render(); }, 60000);
 })();
 
 
