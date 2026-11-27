@@ -858,32 +858,36 @@
       var anchor = (prev && (prev.actual || prev.end)) || tasks[idx].actual || tasks[idx].start || TODAY;
       var anchorDate = parse(anchor);
       var cursorStart = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), anchorDate.getDate() + 1);
-      var available = workdaysBetween(cursorStart, parse(rec.plan));
       var origDays = subset.map(function (t) { return Math.max(1, +(t.days || 1)); });
       var totalOrig = origDays.reduce(function (a, b) { return a + b; }, 0);
-      var totalNew = Math.max(totalOrig, available);
+      var totalCalendar = diffDays(iso(cursorStart), rec.plan) + 1;
+      if (totalCalendar < 1) totalCalendar = totalOrig;
       var newDays = origDays.slice();
-      var extra = totalNew - totalOrig;
-      if (extra > 0) {
+      if (totalCalendar > totalOrig) {
+        var extra = totalCalendar - totalOrig;
         var longest = 0;
         for (var j = 1; j < newDays.length; j++) if (newDays[j] > newDays[longest]) longest = j;
         newDays[longest] += extra;
+      } else if (totalCalendar < totalOrig) {
+        var deficit = totalOrig - totalCalendar;
+        var order = newDays.map(function (d, i) { return i; }).sort(function (a, b) { return newDays[b] - newDays[a]; });
+        while (deficit > 0) {
+          var changed = false;
+          for (var oi = 0; oi < order.length && deficit > 0; oi++) {
+            var di = order[oi];
+            if (newDays[di] > 1) { newDays[di]--; deficit--; changed = true; }
+          }
+          if (!changed) break;
+        }
       }
       var cursor = cursorStart;
       subset.forEach(function (t, i) {
         var days = Math.max(1, newDays[i]);
-        var end = addWdForward(cursor, days - 1);
+        var endDate = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + days - 1);
         if (!map[t.taskKey]) map[t.taskKey] = [];
-        map[t.taskKey].push({ seq: rec.seq, start: iso(cursor), end: iso(end), days: days });
-        cursor = nextWd(end);
+        map[t.taskKey].push({ seq: rec.seq, start: iso(cursor), end: iso(endDate), days: days });
+        cursor = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate() + 1);
       });
-      var lastTask = subset[subset.length - 1];
-      var lastViews = lastTask ? map[lastTask.taskKey] : null;
-      if (lastViews && lastViews.length && parse(rec.plan) >= parse(lastView.start)) {
-        var lastView = lastViews[lastViews.length - 1];
-        lastView.end = rec.plan;
-        lastView.days = Math.max(1, workdaysBetween(parse(lastView.start), parse(rec.plan)));
-      }
     });
     Object.keys(map).forEach(function (k) { map[k].sort(function (a, b) { return (+a.seq || 0) - (+b.seq || 0); }); });
     return map;
